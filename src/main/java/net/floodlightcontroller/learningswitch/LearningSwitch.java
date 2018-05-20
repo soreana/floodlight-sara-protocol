@@ -53,6 +53,26 @@
  * For documentation, forums, issue tracking and more visit:
  * <p>
  * http://www.openflowhub.org/display/Floodlight/Floodlight+Home
+ * <p>
+ * Floodlight
+ * A BSD licensed, Java based OpenFlow controller
+ * <p>
+ * Floodlight is a Java based OpenFlow controller originally written by David Erickson at Stanford
+ * University. It is available under the BSD license.
+ * <p>
+ * For documentation, forums, issue tracking and more visit:
+ * <p>
+ * http://www.openflowhub.org/display/Floodlight/Floodlight+Home
+ * <p>
+ * Floodlight
+ * A BSD licensed, Java based OpenFlow controller
+ * <p>
+ * Floodlight is a Java based OpenFlow controller originally written by David Erickson at Stanford
+ * University. It is available under the BSD license.
+ * <p>
+ * For documentation, forums, issue tracking and more visit:
+ * <p>
+ * http://www.openflowhub.org/display/Floodlight/Floodlight+Home
  **/
 
 /**
@@ -97,7 +117,7 @@ import java.util.concurrent.ConcurrentHashMap;
 
 // paag: with IControllerCompletionListener that logswhen an input event has been consumed
 public class LearningSwitch
-        implements IFloodlightModule, ILearningSwitchService, IOFMessageListener, IControllerCompletionListener {
+    implements IFloodlightModule, ILearningSwitchService, IOFMessageListener, IControllerCompletionListener {
     protected static Logger log = LoggerFactory.getLogger(LearningSwitch.class);
 
     // Module dependencies
@@ -231,29 +251,38 @@ public class LearningSwitch
         return macVlanToSwitchPortMap;
     }
 
-    // todo check this method
-    protected void doFlood(IOFSwitch sw, OFPacketIn pi) {
+    private SaraProtocolUtils.SaraProtocolState myProtocolState = SaraProtocolUtils.SaraProtocolState.BROADCAST;
+    private SaraProtocol mySara = new SaraProtocol();
+
+    private void doFlood(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
         OFPort inPort = OFMessageUtils.getInPort(pi);
         OFPacketOut.Builder pob = sw.getOFFactory().buildPacketOut();
-        List<OFAction> actions = new ArrayList<OFAction>();
+        // Don't put any action in this list if you want packet drops or just return doFlood
+        List<OFAction> actions = new ArrayList<>();
 
-        ArrayList<Integer> validPorts = UpPorts.getMyInstance().getSwitchesUpPorts(sw.getId().getLong());
-        for (OFPortDesc pd : sw.getPorts()) {
-            OFPort p = pd.getPortNo();
+        long currentSwitchId = sw.getId().getLong();
 
-            //log.info("switch " + sw.getId().getLong() + " from port "+ inPort.getPortNumber());
-            if (p.equals(inPort)) continue;
-            if (validPorts.contains(p.getPortNumber())) {
-                //log.info("switch " + sw.getId().getLong() + "from port "+ inPort.getPortNumber()
-                //+" sent to port "+ p.getPortNumber());
-                actions.add(sw.getOFFactory().actions().output(p, Integer.MAX_VALUE));
+        if ( ! mySara.haveEntryFor(currentSwitchId) && SaraProtocolUtils.ICareAbout(cntx)) {
+            log.info("get packet on switch : {}", sw.getId());
+
+            switch (myProtocolState) {
+                case BROADCAST:
+                    for (OFPortDesc p : sw.getPorts()) {
+                        if (p.equals(inPort)) continue;
+                        actions.add(sw.getOFFactory().actions().output(p.getPortNo(), Integer.MAX_VALUE));
+                        // todo mark ports
+                    }
+                    mySara.setCurrentSwitch(currentSwitchId);
+                    mySara.makeEntryFor(currentSwitchId);
+                    myProtocolState = SaraProtocolUtils.SaraProtocolState.GET_RESPOND;
+                    myProtocolState.stayInGetRespondFor(sw.getPorts().size() - 1);
+                    break;
+                case GET_RESPOND:
+                    mySara.learnLinkForCurrentSwitch(sw.getId().getLong(),inPort,3);
+                    myProtocolState = myProtocolState.nextState();
             }
         }
 
-//        for (OFPort p : broadcastPorts) {
-//            if (p.equals(inPort)) continue;
-//            actions.add(sw.getOFFactory().actions().output(p, Integer.MAX_VALUE));
-//        }
         pob.setActions(actions);
         // log.info("actions {}",actions);
         // set buffer-id, in-port and packet-data based on packet-in
@@ -263,7 +292,7 @@ public class LearningSwitch
 
         if (log.isTraceEnabled()) {
             log.trace("Writing flood PacketOut switch={} packet-in={} packet-out={}",
-                    new Object[]{sw, pi, pob.build()});
+                new Object[]{sw, pi, pob.build()});
         }
         sw.write(pob.build());
     }
@@ -336,7 +365,7 @@ public class LearningSwitch
 
         if (log.isTraceEnabled()) {
             log.trace("{} {} flow mod {}",
-                    new Object[]{sw, (command == OFFlowModCommand.DELETE) ? "deleting" : "adding", fmb.build()});
+                new Object[]{sw, (command == OFFlowModCommand.DELETE) ? "deleting" : "adding", fmb.build()});
         }
 
         counterFlowMod.increment();
@@ -368,16 +397,16 @@ public class LearningSwitch
         if (inPort.equals(outport)) {
             if (log.isDebugEnabled()) {
                 log.debug("Attempting to do packet-out to the same " +
-                                "interface as packet-in. Dropping packet. " +
-                                " SrcSwitch={}, match = {}, pi={}",
-                        new Object[]{sw, match, pi});
+                        "interface as packet-in. Dropping packet. " +
+                        " SrcSwitch={}, match = {}, pi={}",
+                    new Object[]{sw, match, pi});
                 return;
             }
         }
 
         if (log.isTraceEnabled()) {
             log.trace("PacketOut srcSwitch={} match={} pi={}",
-                    new Object[]{sw, match, pi});
+                new Object[]{sw, match, pi});
         }
 
         OFPacketOut.Builder pob = sw.getOFFactory().buildPacketOut();
@@ -432,8 +461,8 @@ public class LearningSwitch
 
         Match.Builder mb = sw.getOFFactory().buildMatch();
         mb.setExact(MatchField.IN_PORT, inPort)
-                .setExact(MatchField.ETH_SRC, srcMac)
-                .setExact(MatchField.ETH_DST, dstMac);
+            .setExact(MatchField.ETH_SRC, srcMac)
+            .setExact(MatchField.ETH_DST, dstMac);
 
         if (!vlan.equals(VlanVid.ZERO)) {
             mb.setExact(MatchField.VLAN_VID, OFVlanVidMatch.ofVlanVid(vlan));
@@ -454,7 +483,7 @@ public class LearningSwitch
     private Command processPacketInMessage(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
         OFPort inPort = (pi.getVersion().compareTo(OFVersion.OF_12) < 0 ? pi.getInPort() : pi.getMatch().get(MatchField.IN_PORT));
 
-		/* Read packet header attributes into Match */
+        /* Read packet header attributes into Match */
         Match m = createMatchFromPacket(sw, inPort, cntx);
         MacAddress sourceMac = m.get(MatchField.ETH_SRC);
         MacAddress destMac = m.get(MatchField.ETH_DST);
@@ -473,7 +502,7 @@ public class LearningSwitch
         if ((destMac.getLong() & 0xfffffffffff0L) == 0x0180c2000000L) {
             if (log.isTraceEnabled()) {
                 log.trace("ignoring packet addressed to 802.1D/Q reserved addr: switch {} vlan {} dest MAC {}",
-                        new Object[]{sw, vlan, destMac.toString()});
+                    new Object[]{sw, vlan, destMac.toString()});
             }
             return Command.STOP;
         }
@@ -494,11 +523,11 @@ public class LearningSwitch
             // XXX For LearningSwitch this doesn't do much. The sourceMac is removed
             //     from port map whenever a flow expires, so you would still see
             //     a lot of floods.
-            this.doFlood(sw, pi);
+            this.doFlood(sw, pi, cntx);
         } else if (outPort.equals(inPort)) {
             log.trace("ignoring packet that arrived on same port as learned destination:"
-                            + " switch {} vlan {} dest MAC {} port {}",
-                    new Object[]{sw, vlan, destMac.toString(), outPort.getPortNumber()});
+                    + " switch {} vlan {} dest MAC {} port {}",
+                new Object[]{sw, vlan, destMac.toString(), outPort.getPortNumber()});
         } else {
             // Add flow table entry matching source MAC, dest MAC, VLAN and input port
             // that sends to the port we previously learned for the dest MAC/VLAN.  Also
@@ -515,8 +544,8 @@ public class LearningSwitch
             if (LEARNING_SWITCH_REVERSE_FLOW) {
                 Match.Builder mb = m.createBuilder();
                 mb.setExact(MatchField.ETH_SRC, m.get(MatchField.ETH_DST))
-                        .setExact(MatchField.ETH_DST, m.get(MatchField.ETH_SRC))
-                        .setExact(MatchField.IN_PORT, outPort);
+                    .setExact(MatchField.ETH_DST, m.get(MatchField.ETH_SRC))
+                    .setExact(MatchField.IN_PORT, outPort);
                 if (m.get(MatchField.VLAN_VID) != null) {
                     mb.setExact(MatchField.VLAN_VID, m.get(MatchField.VLAN_VID));
                 }
@@ -548,9 +577,9 @@ public class LearningSwitch
         // another packet, allowing us to re-learn its port.  Meanwhile we remove
         // it from the macVlanToPortMap to revert to flooding packets to this device.
         this.removeFromPortMap(sw, match.get(MatchField.ETH_SRC),
-                match.get(MatchField.VLAN_VID) == null
-                        ? VlanVid.ZERO
-                        : match.get(MatchField.VLAN_VID).getVlanVid());
+            match.get(MatchField.VLAN_VID) == null
+                ? VlanVid.ZERO
+                : match.get(MatchField.VLAN_VID).getVlanVid());
 
         // Also, if packets keep coming from another device (e.g. from ping), the
         // corresponding reverse flow entry will never expire on its own and will
@@ -558,7 +587,7 @@ public class LearningSwitch
         // expired flow entry), so we must delete the reverse entry explicitly.
         Match.Builder mb = sw.getOFFactory().buildMatch();
         mb.setExact(MatchField.ETH_SRC, match.get(MatchField.ETH_DST))
-                .setExact(MatchField.ETH_DST, match.get(MatchField.ETH_SRC));
+            .setExact(MatchField.ETH_DST, match.get(MatchField.ETH_SRC));
         if (match.get(MatchField.VLAN_VID) != null) {
             mb.setExact(MatchField.VLAN_VID, match.get(MatchField.VLAN_VID));
         }
@@ -609,7 +638,7 @@ public class LearningSwitch
     @Override
     public Collection<Class<? extends IFloodlightService>> getModuleServices() {
         Collection<Class<? extends IFloodlightService>> l =
-                new ArrayList<Class<? extends IFloodlightService>>();
+            new ArrayList<Class<? extends IFloodlightService>>();
         l.add(ILearningSwitchService.class);
         return l;
     }
@@ -657,7 +686,7 @@ public class LearningSwitch
             }
         } catch (NumberFormatException e) {
             log.warn("Error parsing flow idle timeout, " +
-                    "using default of {} seconds", FLOWMOD_DEFAULT_IDLE_TIMEOUT);
+                "using default of {} seconds", FLOWMOD_DEFAULT_IDLE_TIMEOUT);
         }
         try {
             String hardTimeout = configOptions.get("hardtimeout");
@@ -666,7 +695,7 @@ public class LearningSwitch
             }
         } catch (NumberFormatException e) {
             log.warn("Error parsing flow hard timeout, " +
-                    "using default of {} seconds", FLOWMOD_DEFAULT_HARD_TIMEOUT);
+                "using default of {} seconds", FLOWMOD_DEFAULT_HARD_TIMEOUT);
         }
         try {
             String priority = configOptions.get("priority");
@@ -675,8 +704,8 @@ public class LearningSwitch
             }
         } catch (NumberFormatException e) {
             log.warn("Error parsing flow priority, " +
-                            "using default of {}",
-                    FLOWMOD_PRIORITY);
+                    "using default of {}",
+                FLOWMOD_PRIORITY);
         }
         log.debug("FlowMod idle timeout set to {} seconds", FLOWMOD_DEFAULT_IDLE_TIMEOUT);
         log.debug("FlowMod hard timeout set to {} seconds", FLOWMOD_DEFAULT_HARD_TIMEOUT);
