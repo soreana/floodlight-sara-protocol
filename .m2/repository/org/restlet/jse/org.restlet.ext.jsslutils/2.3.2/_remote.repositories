@@ -1,0 +1,4 @@
+#NOTE: This is a Maven Resolver internal implementation file, its format can be changed without prior notice.
+#Tue Jun 26 16:08:19 GMT 2018
+org.restlet.ext.jsslutils-2.3.2.pom>maven-restlet=
+org.restlet.ext.jsslutils-2.3.2.jar>maven-restlet=
