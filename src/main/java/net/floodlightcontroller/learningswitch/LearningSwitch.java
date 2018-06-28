@@ -112,10 +112,11 @@ import org.projectfloodlight.openflow.util.LRULinkedHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
+import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
 
-// paag: with IControllerCompletionListener that logswhen an input event has been consumed
+// paag: with IControllerCompletionListener that logs when an input event has been consumed
 public class LearningSwitch
     implements IFloodlightModule, ILearningSwitchService, IOFMessageListener, IControllerCompletionListener {
     protected static Logger log = LoggerFactory.getLogger(LearningSwitch.class);
@@ -251,50 +252,31 @@ public class LearningSwitch
         return macVlanToSwitchPortMap;
     }
 
-    private SaraProtocolUtils.SaraProtocolState myProtocolState = SaraProtocolUtils.SaraProtocolState.BROADCAST;
     private SaraProtocol mySara = new SaraProtocol();
 
     private void doFlood(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
         OFPort inPort = OFMessageUtils.getInPort(pi);
-        OFPacketOut.Builder pob = sw.getOFFactory().buildPacketOut();
-        // Don't put any action in this list if you want packet drops or just return doFlood
-        List<OFAction> actions = new ArrayList<>();
 
-        long currentSwitchId = sw.getId().getLong();
+        if (SaraProtocolUtils.ICareAbout(cntx)) {
+            log.info("get packet on switch: " + String.valueOf(sw.getId().getLong()) +
+                    " inPort: " + inPort.toString()
+            );
 
-        if ( ! mySara.haveEntryFor(currentSwitchId) && SaraProtocolUtils.ICareAbout(cntx)) {
-            log.info("get packet on switch : {}", sw.getId());
-
-            switch (myProtocolState) {
+            switch (mySara.getState()) {
                 case BROADCAST:
-                    for (OFPortDesc p : sw.getPorts()) {
-                        if (p.equals(inPort)) continue;
-                        actions.add(sw.getOFFactory().actions().output(p.getPortNo(), Integer.MAX_VALUE));
-                        // todo mark ports
-                    }
-                    mySara.setCurrentSwitch(currentSwitchId);
-                    mySara.makeEntryFor(currentSwitchId);
-                    myProtocolState = SaraProtocolUtils.SaraProtocolState.GET_RESPOND;
-                    myProtocolState.stayInGetRespondFor(sw.getPorts().size() - 1);
+                    log.info("BroadCasting: ");
+                    if (!mySara.isInitialized())
+                        mySara.initialize(sw, inPort);
+                    mySara.broadcastNextSwitch(sw, pi);
                     break;
                 case GET_RESPOND:
-                    mySara.learnLinkForCurrentSwitch(sw.getId().getLong(),inPort,3);
-                    myProtocolState = myProtocolState.nextState();
+                    log.info("Getting Respond!");
+
+                    if (mySara.isHostLink(sw.getId().getLong(), inPort))
+                        return;
+                    mySara.handleRespond(sw,inPort);
             }
         }
-
-        pob.setActions(actions);
-        // log.info("actions {}",actions);
-        // set buffer-id, in-port and packet-data based on packet-in
-        pob.setBufferId(OFBufferId.NO_BUFFER);
-        OFMessageUtils.setInPort(pob, inPort);
-        pob.setData(pi.getData());
-
-        if (log.isTraceEnabled()) {
-            log.trace("Writing flood PacketOut switch={} packet-in={} packet-out={}",
-                new Object[]{sw, pi, pob.build()});
-        }
-        sw.write(pob.build());
     }
 
     /**
@@ -600,12 +582,13 @@ public class LearningSwitch
 
     @Override
     public Command receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
+
         if (showSwitches) {
-            Map<DatapathId, IOFSwitch> switches = iofSwitchService.getAllSwitchMap();
+            StringBuilder switches = new StringBuilder();
+            for (DatapathId dpid : iofSwitchService.getAllSwitchDpids())
+                switches.append(String.valueOf(dpid.getLong())).append(", ");
 
-            log.info("###############################################################################################");
-
-            log.info("###############################################################################################");
+            log.info("List of switches: " + switches);
             showSwitches = false;
         }
 

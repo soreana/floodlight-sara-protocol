@@ -15,7 +15,6 @@ public interface SaraProtocolUtils {
      * @param cntx used to extract packet info
      * @return true if packet contain ARP or ICMP header
      */
-
     static boolean ICareAbout(FloodlightContext cntx) {
         Ethernet eth = IFloodlightProviderService.bcStore.get(cntx, IFloodlightProviderService.CONTEXT_PI_PAYLOAD);
         if (eth.getEtherType() == EthType.IPv4) {
@@ -23,8 +22,6 @@ public interface SaraProtocolUtils {
             return ip.getProtocol() == IpProtocol.ICMP;
         } else return eth.getEtherType() == EthType.ARP;
     }
-
-    long TIME_OUT = 10;
 
     enum SaraProtocolState {
         BROADCAST,
