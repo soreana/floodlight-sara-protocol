@@ -24,7 +24,7 @@ public interface SaraProtocolUtils {
         } else return eth.getEtherType() == EthType.ARP;
     }
 
-    long TIME_OUT = 10;
+    long TIME_OUT = 100 * 1000;
 
     enum SaraProtocolState {
         BROADCAST,
