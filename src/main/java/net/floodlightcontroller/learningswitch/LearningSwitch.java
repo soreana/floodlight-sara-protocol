@@ -112,11 +112,12 @@ import org.projectfloodlight.openflow.util.LRULinkedHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
-import java.nio.charset.StandardCharsets;
 import java.util.*;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.locks.Lock;
+import java.util.concurrent.locks.ReentrantLock;
 
-// paag: with IControllerCompletionListener that logs when an input event has been consumed
+// paag: with IControllerCompletionListener that logswhen an input event has been consumed
 public class LearningSwitch
     implements IFloodlightModule, ILearningSwitchService, IOFMessageListener, IControllerCompletionListener {
     protected static Logger log = LoggerFactory.getLogger(LearningSwitch.class);
@@ -252,30 +253,82 @@ public class LearningSwitch
         return macVlanToSwitchPortMap;
     }
 
+    private SaraProtocolUtils.SaraProtocolState myProtocolState = SaraProtocolUtils.SaraProtocolState.BROADCAST;
     private SaraProtocol mySara = new SaraProtocol();
 
     private void doFlood(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
+        System.out.println("----------------------------------------------------");
+        System.out.println("In doFlood");
         OFPort inPort = OFMessageUtils.getInPort(pi);
+        OFPacketOut.Builder pob = sw.getOFFactory().buildPacketOut();
+        // Don't put any action in this list if you want packet drops or just return doFlood
+        List<OFAction> actions = new ArrayList<>();
 
-        if (SaraProtocolUtils.ICareAbout(cntx)) {
-            log.info("get packet on switch: " + String.valueOf(sw.getId().getLong()) +
-                    " inPort: " + inPort.toString()
-            );
+        long currentSwitchId = sw.getId().getLong();
 
-            switch (mySara.getState()) {
+        IOFSwitch nxt = null;
+        boolean sendRoute = false;
+
+        if ( ! mySara.haveEntryFor(currentSwitchId) && SaraProtocolUtils.ICareAbout(cntx)) {
+
+            System.out.println("get packet on switch : " + sw.getId());
+            System.out.println("State: " + myProtocolState + " - doFloodCurrentSwitch: " + currentSwitchId);
+            mySara.printLearned();
+
+            switch (myProtocolState) {
                 case BROADCAST:
-                    log.info("BroadCasting: ");
-                    if (!mySara.isInitialized())
-                        mySara.initialize(sw, inPort);
-                    mySara.broadcastNextSwitch(sw, pi);
+                    for (OFPortDesc p : sw.getPorts()) {
+                        actions.add(sw.getOFFactory().actions().output(p.getPortNo(), Integer.MAX_VALUE));
+                    }
+                    long startTime = System.currentTimeMillis();
+                    mySara.setCurrentSwitch(currentSwitchId, startTime);
+                    mySara.makeEntryFor(currentSwitchId);
+                    myProtocolState = SaraProtocolUtils.SaraProtocolState.GET_RESPOND;
+                    myProtocolState.stayInGetRespondFor(sw.getPorts().size());
+                    System.out.println("sw.getPorts().size = " + sw.getPorts().size());
                     break;
                 case GET_RESPOND:
-                    log.info("Getting Respond!");
+                    long elapsed = (new Date()).getTime() - mySara.getCurrentSwitchStartTime();
+                    System.out.println("elapsed: " + elapsed);
+                    if (elapsed > SaraProtocolUtils.TIME_OUT) {
+                        myProtocolState = SaraProtocolUtils.SaraProtocolState.ROUTE;
+                        System.out.println("TIME_OUT");
+                    } else {
+                        myProtocolState = myProtocolState.nextState();
+                        mySara.addToQueue(currentSwitchId, inPort, elapsed);
+                        mySara.learnLinkForCurrentSwitch(sw.getId().getLong(), inPort, elapsed);
+                        break;
+                    }
+                case ROUTE:
+                    try {
+                         long nxtId = mySara.extractMin();
+                        nxt = iofSwitchService.getSwitch(DatapathId.of(nxtId));
+                        System.out.println("nxt.id = " + nxt.getId().getLong());
+                        sendRoute = true;
+                        myProtocolState = SaraProtocolUtils.SaraProtocolState.BROADCAST;
+                    } catch (NoSuchElementException e) {
+                        System.out.println(e.getMessage());
+                    }
+                    break;
+           }
+        }
+        System.out.println("----------------------------------------------------");
 
-                    if (mySara.isHostLink(sw.getId().getLong(), inPort))
-                        return;
-                    mySara.handleRespond(sw,inPort);
-            }
+        pob.setActions(actions);
+        // log.info("actions {}",actions);
+        // set buffer-id, in-port and packet-data based on packet-in
+        pob.setBufferId(OFBufferId.NO_BUFFER);
+        OFMessageUtils.setInPort(pob, inPort);
+        pob.setData(pi.getData());
+
+        if (log.isTraceEnabled()) {
+            log.trace("Writing flood PacketOut switch={} packet-in={} packet-out={}",
+                new Object[]{sw, pi, pob.build()});
+        }
+        sw.write(pob.build());
+
+        if (sendRoute) {
+            sendPacket(nxt, pi);
         }
     }
 
@@ -354,6 +407,19 @@ public class LearningSwitch
 
         // and write it out
         sw.write(fmb.build());
+    }
+
+    private void sendPacket(IOFSwitch sw, OFPacketIn pi) {
+        Ethernet l2 = new Ethernet();
+        l2.setSourceMACAddress(MacAddress.of("00:00:00:00:00:01"));
+        l2.setDestinationMACAddress(MacAddress.BROADCAST);
+        l2.setEtherType(EthType.IPv4);
+        OFPacketOut po = sw.getOFFactory().buildPacketOut() /* mySwitch is some IOFSwitch object */
+                .setData(pi.getData())
+                .setActions(Collections.singletonList((OFAction) sw.getOFFactory().actions().output(OFPort.CONTROLLER, 0xffFFffFF)))
+                .setInPort(OFPort.CONTROLLER)
+                .build();
+        sw.write(po);
     }
 
     /**
@@ -455,7 +521,7 @@ public class LearningSwitch
 
     /**
      * Processes a OFPacketIn message. If the switch has learned the MAC/VLAN to port mapping
-     * for the pair it will write a FlowMod for. If the mapping has not been learned the
+     * for the pair it will write a FlowMod for. If the mapping has not been learned then
      * we will flood the packet.
      * @param sw
      * @param pi
@@ -582,13 +648,19 @@ public class LearningSwitch
 
     @Override
     public Command receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
-
         if (showSwitches) {
-            StringBuilder switches = new StringBuilder();
-            for (DatapathId dpid : iofSwitchService.getAllSwitchDpids())
-                switches.append(String.valueOf(dpid.getLong())).append(", ");
+            Map<DatapathId, IOFSwitch> switches = iofSwitchService.getAllSwitchMap();
 
-            log.info("List of switches: " + switches);
+            log.info("###############################################################################################");
+
+            for (IOFSwitch iofSwitch: switches.values()) {
+                System.out.println(iofSwitch.getId().getLong());
+            }
+
+            IOFSwitch tmp = iofSwitchService.getSwitch(DatapathId.of(1));
+            System.out.println("tmp = " + tmp.getId().getLong());
+
+            log.info("###############################################################################################");
             showSwitches = false;
         }
 
