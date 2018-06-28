@@ -24,14 +24,12 @@ public interface SaraProtocolUtils {
         } else return eth.getEtherType() == EthType.ARP;
     }
 
-    long TIME_OUT = 300;
+    long TIME_OUT = 10;
 
     enum SaraProtocolState {
-        INIT,
+        ROUTE,
         BROADCAST,
-        GET_RESPOND,
-        LEARNING,
-        LEARNED;
+        GET_RESPOND;
         private int stayInGetRespond = 0;
 
         public void stayInGetRespondFor(int n) {
@@ -43,7 +41,7 @@ public interface SaraProtocolUtils {
         public SaraProtocolState nextState() {
             stayInGetRespond--;
             if (stayInGetRespond <= 0)
-                return BROADCAST;
+                return ROUTE;
             return GET_RESPOND;
         }
     }

@@ -1,284 +1,305 @@
 package net.floodlightcontroller.learningswitch;
 
-import org.apache.derby.impl.sql.compile.IntersectOrExceptNode;
-import org.projectfloodlight.openflow.protocol.OFPortFeatures;
 import org.projectfloodlight.openflow.types.OFPort;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.*;
 
 public class SaraProtocol {
-    private Map<InEntry, OutEntry> learned = new HashMap<>();
-    private Map<Long, Set<OutEntry>> waitingRoom = new HashMap<>();
-    private Map<Long, SaraProtocolUtils.SaraProtocolState> switchStates = new HashMap<>();
-    private Map<Long, ArrayList<OFPort>> switchPorts = new HashMap<>();
-    private Map<Long, ArrayList<OFPort>> sentSwitchPorts = new HashMap<>();
-    public int edges = 0;
-    public int vertices = 0;
-    public boolean MSTMade = false;
-    private Graph graph;
-    private Graph.Edge[] finalEdges;
+    protected static Logger log = LoggerFactory.getLogger(LearningSwitch.class);
 
-    public boolean isLearned(){
-        Iterator it = switchStates.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry pair = (Map.Entry)it.next();
-            if(pair.getValue() != SaraProtocolUtils.SaraProtocolState.LEARNED){
-                return false;
-            }
+    private Map<Long, Switch> switches = new HashMap<>();
+
+    private long currentSwitch;
+    long broadcastStart = 0;
+    long newARPTime = 0;
+
+    private long routeSwitch;
+    private OFPort routePort;
+
+    public void setRouteSwitch(long routeSwitch) {
+        this.routeSwitch = routeSwitch;
+    }
+
+    public void setRoutePort(OFPort routePort) {
+        this.routePort = routePort;
+    }
+
+    public void markHost() {
+        if (routePort != OFPort.ZERO) {
+            switches.get(routeSwitch).adjacents.put(routePort, new Entry(true));
+            log.info("host detected: switch {} port {}", routeSwitch, routePort.getPortNumber());
         }
-        return true;
     }
 
-    public int getSwitchSize(){
-        return switchStates.size();
-    }
-
-    public Map<InEntry, OutEntry> getLearned(){
-        return learned;
-    }
-
-    public void createGraph(){
-        graph = new Graph(vertices + switchStates.size(), edges / 2);
-        int i = 0;
-        Iterator it = learned.entrySet().iterator();
-        while (it.hasNext()) {
-            Map.Entry pair = (Map.Entry)it.next();
-            graph.edge[i].src = ((InEntry)pair.getKey());
-            graph.edge[i].dest = ((OutEntry)pair.getValue());
-            graph.edge[i].weight = ((OutEntry)pair.getValue()).getValue();
+    public void addMe(long id) {
+        if (!switches.containsKey(id)) {
+            switches.put(id, new Switch(id));
         }
-        finalEdges = graph.KruskalMST();
     }
-
-    public ArrayList<OFPort> getNextPorts(long sw){
-        ArrayList<OFPort> p = new ArrayList<>();
-        for(int i = 0 ; i < finalEdges.length ; i++){
-            if(finalEdges[i].src.getSw() == sw){
-                p.add(finalEdges[i].src.getPort());
-            }
-            else if(finalEdges[i].dest.getSw() == sw){
-                p.add(finalEdges[i].dest.getPort());
-            }
-        }
-        return p;
-    }
-
-    public void addPort(long sw, OFPort p){
-        ArrayList<OFPort> temp = switchPorts.get(sw);
-        if(temp == null){
-            temp = new ArrayList<>();
-        }
-        temp.add(p);
-        switchPorts.put(sw, temp);
-        sentSwitchPorts.put(sw, temp);
-    }
-
-    public OFPort getPort(long sw){
-        Random r = new Random();
-        int i = r.nextInt(switchPorts.get(sw).size());
-        return switchPorts.get(sw).get(i);
-    }
-
-    public ArrayList<OFPort> getSentPorts(long sw){
-        return sentSwitchPorts.get(sw);
-    }
-
-    public void removePort(long sw, OFPort p){
-        ArrayList<OFPort> temp = switchPorts.get(sw);
-        temp.remove(p);
-        switchPorts.put(sw, temp);
-    }
-
-    public Long getCurrentSwitch() {
-        return currentSwitch;
-    }
-
-    private Long currentSwitch;
-    private long startBroadcast;
-
-    public boolean haveState(SaraProtocolUtils.SaraProtocolState state){
-        return switchStates.containsValue(state);
-    }
-
-    public SaraProtocolUtils.SaraProtocolState getState(long sw){
-        return switchStates.get(sw);
-    }
-
-    public void setState(long sw, SaraProtocolUtils.SaraProtocolState state){
-        switchStates.put(sw, state);
-    }
-
-    public long getStartBroadcast() {
-        return startBroadcast;
-    }
-
-    public void setStartBroadcast() {
-        this.startBroadcast = System.currentTimeMillis();
-    }
-
-//    public boolean haveEntryFor(long id) {
-//        // todo
-//        return false;
-//    }
 
     public void setCurrentSwitch(long currentSwitch) {
         this.currentSwitch = currentSwitch;
+        switches.get(currentSwitch).setDidBroadcast(true);
     }
 
-    public void makeEntryFor(long currentSwitchId) {
-        waitingRoom.put(currentSwitchId,new HashSet<>());
-        // todo
+    void markCurrentSwitchPort(OFPort p) {
+        Switch s = switches.get(currentSwitch);
+        if (!s.adjacents.containsKey(p)) {
+            switches.get(currentSwitch).adjacents.put(p, null);
+        }
+    }
+
+    private OFPort findRoutePortRecursively(Switch curr) {
+        Switch last = null;
+        while (curr.father != -1) {
+            last = curr;
+            curr = switches.get(curr.father);
+        }
+        if (last != null) {
+            for (OFPort p : curr.adjacents.keySet()) {
+                Entry e = curr.adjacents.get(p);
+                if (e != null && e.getSw() == last.id) {
+                    return p;
+                }
+            }
+        }
+        return null;
+    }
+
+    public OFPort getRoutePort(long switchId) {
+        Switch sw = switches.get(switchId);
+        if (sw.getDidBroadcast()) {
+            for (long sid : switches.keySet()) {
+                switches.get(sid).init();
+            }
+            sw.dist = 0;
+            Switch min = sw;
+            while (true) {
+                if (!min.getDidBroadcast()) {
+                    return findRoutePortRecursively(min);
+                }
+                for (OFPort p : min.adjacents.keySet()) {
+                    Entry e = min.adjacents.get(p);
+                    if (e == null) {
+                        // Link is not recognized
+                        log.info("Link is not recognized");
+                        OFPort ans = findRoutePortRecursively(min);
+                        if (ans == null) {
+                            return p;
+                        }
+                        else {
+                            return ans;
+                        }
+                    }
+                    else if (!e.getIsHost()) {
+                        Switch s = switches.get(e.getSw());
+                        if (s.isFinal) {
+                            continue;
+                        }
+                        if (s.dist == -1 || s.dist > min.dist + e.getDist()) {
+                            s.dist = min.dist + e.getDist();
+                            s.father = min.id;
+                        }
+                    }
+                }
+                min.isFinal = true;
+                long minDist = -1;
+                for (long sid : switches.keySet()) {
+                    Switch s = switches.get(sid);
+                    if (!s.isFinal && s.dist != -1 && (minDist == -1 || s.dist < minDist)) {
+                        minDist = s.dist;
+                        min = s;
+                    }
+                }
+            }
+        }
+        else {
+            return OFPort.ZERO;
+        }
+    }
+
+    void printMST() {
+        long switchId = 0;
+        for (Iterator<Long> it = switches.keySet().iterator(); it.hasNext(); ) {
+            switchId = it.next();
+            break;
+        }
+        Switch sw = switches.get(switchId);
+        for (long sid : switches.keySet()) {
+            switches.get(sid).init();
+        }
+        sw.isFinal = true;
+        Set<Switch> visited = new HashSet<>();
+        visited.add(sw);
+        Switch u=null, v=null;
+        while (visited.size() < switches.size()) {
+            long minDist = -1;
+            for (Switch s : visited) {
+                for (OFPort p : s.adjacents.keySet()) {
+                    Entry e = s.adjacents.get(p);
+                    if (e.getIsHost()) {
+                        continue;
+                    }
+                    Switch s2 = switches.get(e.getSw());
+                    if (!s2.isFinal) {
+                        if (minDist == -1 || e.getDist() < minDist) {
+                            minDist = e.getDist();
+                            u = s;
+                            v = s2;
+                        }
+                    }
+                }
+            }
+            v.isFinal = true;
+            visited.add(v);
+            log.info("switch "+u.id+" <-> switch "+v.id);
+        }
+    }
+
+    private class Switch {
+        private long id;
+        private Map<OFPort, Entry> adjacents;
+        private boolean didBroadcast;
+
+        public long father;
+        public long dist;
+        public boolean isFinal;
+
+        Switch(long id) {
+            this.id = id;
+            didBroadcast = false;
+            adjacents = new HashMap<>();
+        }
+
+        boolean getDidBroadcast() {
+            return didBroadcast;
+        }
+
+        void setDidBroadcast(boolean didBroadcast) {
+            this.didBroadcast = didBroadcast;
+        }
+
+        void init() {
+            this.dist = -1;
+            this.father = -1;
+            this.isFinal = false;
+        }
     }
 
     private class Entry {
-        private long sw;
-        private OFPort port;
-        private long value;
+        private long sw = 0;
+        private OFPort port = null;
+        private long dist = 0;
+        private boolean isHost = false;
 
-        Entry(long sw, OFPort port, long value) {
+        Entry(long sw, OFPort port, long dist) {
             this.sw = sw;
             this.port = port;
-            this.value = value;
+            this.dist = dist;
         }
 
-        public OFPort getPort() {
-            return port;
+        Entry(boolean isHost) {
+            this.isHost = isHost;
         }
 
         public long getSw() {
             return sw;
         }
 
-        public long getValue() {
-            return value;
+        public void setSw(long sw) {
+            this.sw = sw;
+        }
+
+        public OFPort getPort() {
+            return port;
+        }
+
+        public void setPort(OFPort port) {
+            this.port = port;
+        }
+
+        public long getDist() {
+            return dist;
+        }
+
+        public void setDist(long dist) {
+            this.dist = dist;
+        }
+
+        public boolean getIsHost() {
+            return isHost;
         }
     }
 
-    private class InEntry extends Entry {
-        InEntry(long sw, OFPort port, long value) {
-            super(sw, port, value);
+    public void learnLinkForCurrentSwitch(long sw, OFPort inPort, long dist) {
+        if (sw == currentSwitch) {
+            // The link is connected to another host
+            log.info("This packet came from the other host!");
+            switches.get(sw).adjacents.put(inPort, new Entry(true));
         }
-
-        InEntry(OutEntry outEntry, long value) {
-            super(outEntry.getSw(),outEntry.getPort(), value);
-        }
-    }
-
-    private class OutEntry extends Entry {
-        OutEntry(long sw, OFPort port, long value) {
-            super(sw, port, value);
-        }
-    }
-
-    public void addHost(long sw, OFPort p){
-        learned.put(new InEntry(sw, p, SaraProtocolUtils.TIME_OUT), new OutEntry(sw, p, SaraProtocolUtils.TIME_OUT));
-    }
-
-    public void learnLinkForCurrentSwitch(long sw, OFPort inPort, long value) {
-        if (learned.containsKey(new InEntry(sw, inPort,value)))
-            return;
-        else if (waitingRoom.containsKey(sw)) {
-            for( OutEntry current : waitingRoom.get(sw)){
-                if(current.getSw() == currentSwitch){
-//                    learned.put(new InEntry(sw,inPort,value),current);
-                    learned.put(new InEntry(current,value),new OutEntry(sw,inPort,value));
+        else {
+            Switch next = switches.get(sw);
+            Switch curr = switches.get(currentSwitch);
+            Entry currEntry = new Entry(currentSwitch, null, dist);
+            long newDist = dist;
+            for (OFPort p : curr.adjacents.keySet()) {
+                Entry adjacent = curr.adjacents.get(p);
+                if (adjacent != null && adjacent.getSw() == sw) {
+                    if (adjacent.getDist() < newDist) {
+                        newDist = adjacent.getDist();
+                    }
+                    currEntry.setPort(p);
+                    adjacent.setPort(inPort);
+                    adjacent.setDist(newDist);
                 }
             }
-            waitingRoom.get(sw).add(new OutEntry(sw, inPort,value));
-        }else {
-            Set<OutEntry> temp = new HashSet<>();
-            temp.add(new OutEntry(sw, inPort,value));
-            waitingRoom.put(currentSwitch,temp);
+            currEntry.setDist(newDist);
+            next.adjacents.put(inPort, currEntry);
         }
+        checkFinish();
     }
 
-    class Graph {
-        class Edge implements Comparable<Edge> {
-            long weight;
-            InEntry src;
-            OutEntry dest;
-
-            public int compareTo(Edge compareEdge) {
-                return (int)(this.weight - compareEdge.weight);
-            }
-        }
-
-        ;
-
-        class subset {
-            int parent, rank;
-        }
-
-        ;
-
-        int V, E;
-        Edge edge[];
-
-        Graph(int v, int e) {
-            V = v;
-            E = e;
-            edge = new Edge[E];
-            for (int i = 0; i < e; ++i)
-                edge[i] = new Edge();
-        }
-
-        int find(subset subsets[], int i) {
-            if (subsets[i].parent != i)
-                subsets[i].parent = find(subsets, subsets[i].parent);
-
-            return subsets[i].parent;
-        }
-
-        void Union(subset subsets[], int x, int y) {
-            int xroot = find(subsets, x);
-            int yroot = find(subsets, y);
-
-            if (subsets[xroot].rank < subsets[yroot].rank)
-                subsets[xroot].parent = yroot;
-            else if (subsets[xroot].rank > subsets[yroot].rank)
-                subsets[yroot].parent = xroot;
-
-
-
-            else {
-                subsets[yroot].parent = xroot;
-                subsets[xroot].rank++;
-            }
-        }
-
-        Edge[] KruskalMST() {
-            Edge result[] = new Edge[V];
-            int e = 0;
-            int i = 0;
-            for (i = 0; i < V; ++i)
-                result[i] = new Edge();
-
-            Arrays.sort(edge);
-
-            subset subsets[] = new subset[V];
-            for (i = 0; i < V; ++i)
-                subsets[i] = new subset();
-
-            for (int v = 0; v < V; ++v) {
-                subsets[v].parent = v;
-                subsets[v].rank = 0;
-            }
-
-            i = 0;
-
-            while (e < V - 1) {
-                Edge next_edge = new Edge();
-                next_edge = edge[i++];
-
-                int x = find(subsets, (int) next_edge.src.getSw());
-                int y = find(subsets, (int) next_edge.dest.getSw());
-
-                if (x != y) {
-                    result[e++] = next_edge;
-                    Union(subsets, x, y);
+    private void checkFinish() {
+        for (long sw : switches.keySet()) {
+            Switch s = switches.get(sw);
+            for (OFPort p : s.adjacents.keySet()) {
+                Entry e = s.adjacents.get(p);
+                if (e == null || (!e.getIsHost() && (e.getPort() == null || e.getSw() == 0))) {
+                    return;
                 }
             }
-            return result;
+        }
+        log.info("----------------------------------------------------------------------");
+        log.info("--------------------------- TOPOLOGY FOUND ---------------------------");
+        log.info("----------------------------------------------------------------------");
+        printTopology();
+        log.info("----------------------------------------------------------------------");
+        log.info("----------------------------- MST EDGES ------------------------------");
+        log.info("----------------------------------------------------------------------");
+        printMST();
+        log.info("----------------------------------------------------------------------");
+        log.info("-------------------------------- DONE --------------------------------");
+        log.info("----------------------------------------------------------------------");
+    }
+
+    private void printTopology() {
+        for (long sw : switches.keySet()) {
+            Switch s = switches.get(sw);
+            log.info("Switch {}:", sw);
+            for (OFPort p : s.adjacents.keySet()) {
+                Entry e = s.adjacents.get(p);
+                if (e == null) {
+                    log.info("--> Port {} is null", p.getPortNumber());
+                }
+                else if (e.getIsHost()) {
+                    log.info("--> Port {} is connected to host", p.getPortNumber());
+                }
+                else {
+                    log.info("--> Port "+String.valueOf(p.getPortNumber())+" is connected to port "+String.valueOf(e.getPort())+" of switch "+String.valueOf(e.getSw())+" ("+String.valueOf(e.getDist())+"ms)");
+                }
+            }
         }
     }
 }
