@@ -5,10 +5,10 @@ import org.projectfloodlight.openflow.types.OFPort;
 import java.util.*;
 
 public class SaraProtocol {
-    private Map<InEntry, OutEntry> learned = new HashMap<>();
-    private Map<Long, Set<OutEntry>> waitingRoom = new HashMap<>();
+    protected Map<InEntry, OutEntry> learned = new HashMap<>();
+    protected Map<Long, Set<OutEntry>> waitingRoom = new HashMap<>();
 
-    private long currentSwitch;
+    protected long currentSwitch;
 
     public boolean haveEntryFor(long id) {
         // todo
@@ -20,31 +20,9 @@ public class SaraProtocol {
         this.currentSwitch = currentSwitch;
     }
 
-    public long getCurrentSwitch(){
-        return this.currentSwitch;
-    }
-
     public void makeEntryFor(long currentSwitchId) {
         waitingRoom.put(currentSwitchId,new HashSet<>());
         // todo
-    }
-
-    public boolean knowsConnectionOn(long sw, OFPort port){
-        for(InEntry entry : learned.keySet()){
-            if(entry.getSw() == sw && entry.getPort().equals(port)){
-                return true;
-            }
-        }
-        return false;
-    }
-
-    public long connectedTo(long sw, OFPort port){
-        for(InEntry entry : learned.keySet()){
-            if(entry.getSw() == sw && entry.getPort().equals(port)){
-                return learned.get(entry).getSw();
-            }
-        }
-        return -1;
     }
 
     private class Entry {
@@ -71,7 +49,7 @@ public class SaraProtocol {
         }
     }
 
-    private class InEntry extends Entry {
+    protected class InEntry extends Entry {
         InEntry(long sw, OFPort port, long value) {
             super(sw, port, value);
         }
@@ -81,7 +59,7 @@ public class SaraProtocol {
         }
     }
 
-    private class OutEntry extends Entry {
+    protected class OutEntry extends Entry {
         OutEntry(long sw, OFPort port, long value) {
             super(sw, port, value);
         }
@@ -91,16 +69,12 @@ public class SaraProtocol {
         if (learned.containsKey(new InEntry(sw, inPort,value)))
             return;
         else if (waitingRoom.containsKey(sw)) {
-            OutEntry learntEntry = null;
             for( OutEntry current : waitingRoom.get(sw)){
                 if(current.getSw() == currentSwitch){
-                    learntEntry = current;
                     learned.put(new InEntry(sw,inPort,value),current);
                     learned.put(new InEntry(current,value),new OutEntry(sw,inPort,value));
                 }
             }
-            if(learntEntry != null)
-                waitingRoom.get(sw).remove(learntEntry);
             waitingRoom.get(sw).add(new OutEntry(sw, inPort,value));
         }else {
             Set<OutEntry> temp = new HashSet<>();
