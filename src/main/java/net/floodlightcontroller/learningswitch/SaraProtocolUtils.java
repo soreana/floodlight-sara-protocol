@@ -27,7 +27,6 @@ public interface SaraProtocolUtils {
     long TIME_OUT = 10;
 
     enum SaraProtocolState {
-        ROUTE,
         BROADCAST,
         GET_RESPOND;
         private int stayInGetRespond = 0;
@@ -41,7 +40,7 @@ public interface SaraProtocolUtils {
         public SaraProtocolState nextState() {
             stayInGetRespond--;
             if (stayInGetRespond <= 0)
-                return ROUTE;
+                return BROADCAST;
             return GET_RESPOND;
         }
     }
