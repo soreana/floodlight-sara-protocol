@@ -325,7 +325,7 @@ public class LearningSwitch
         pob.setData(pi.getData());
 
         log.info("learned:  {}", mySara.getLearned().size());
-        log.info("waiting:  {}", mySara.getWaitingRoom());
+//        log.info("waiting:  {}", mySara.getWaitingRoom());
 
         if (log.isTraceEnabled()) {
             log.trace("Writing flood PacketOut switch={} packet-in={} packet-out={}",
