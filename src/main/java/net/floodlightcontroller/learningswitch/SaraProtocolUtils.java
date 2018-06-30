@@ -24,7 +24,7 @@ public interface SaraProtocolUtils {
         } else return eth.getEtherType() == EthType.ARP;
     }
 
-    long TIME_OUT = 100 * 1000;
+    long TIME_OUT = 10;
 
     enum SaraProtocolState {
         BROADCAST,
@@ -35,6 +35,14 @@ public interface SaraProtocolUtils {
             if (n <= 0)
                 throw new RuntimeException("parameter n should be positive");
             stayInGetRespond = n;
+        }
+
+        public void decreaseStayInGetRespond(){
+            stayInGetRespond --;
+        }
+
+        public void increaseStayInGetRespond(){
+            stayInGetRespond ++;
         }
 
         public SaraProtocolState nextState() {

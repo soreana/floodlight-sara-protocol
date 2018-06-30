@@ -228,6 +228,8 @@ public class LearningSwitch
         return null;
     }
 
+    private Timer timer = new Timer();
+
     /**
      * Clears the MAC/VLAN -> SwitchPort map for all switches
      */
@@ -254,9 +256,7 @@ public class LearningSwitch
     private SaraProtocolUtils.SaraProtocolState myProtocolState = SaraProtocolUtils.SaraProtocolState.BROADCAST;
     private SaraProtocol mySara = new SaraProtocol();
 
-    private long broadcastTime;
-
-    private long waitingFor = -1;
+    long startBroadcastTime = 0;
 
     private void doFlood(IOFSwitch sw, OFPacketIn pi, FloodlightContext cntx) {
         OFPort inPort = OFMessageUtils.getInPort(pi);
@@ -266,58 +266,66 @@ public class LearningSwitch
 
         long currentSwitchId = sw.getId().getLong();
 
-        if (SaraProtocolUtils.ICareAbout(cntx)) {
-            if (mySara.isFinished() && SaraProtocolUtils.SaraProtocolState.GET_RESPOND != myProtocolState){
-                mySara.printLearned();
-                throw new RuntimeException("finished");
-            }
-            log.info("get packet on switch : {}", sw.getId());
-
+        log.info("state:   {}", myProtocolState);
+        log.info("get packet on switch : {}", sw.getId());
+        if ( ! mySara.haveEntryFor(currentSwitchId) && SaraProtocolUtils.ICareAbout(cntx)) {
             switch (myProtocolState) {
                 case BROADCAST:
-                    if (!mySara.haveEntryFor(currentSwitchId)) {
-                        ArrayList<OFPortDesc> ports = new ArrayList<>();
-                        for (OFPortDesc p : sw.getPorts()) {
-                            actions.add(sw.getOFFactory().actions().output(p.getPortNo(), Integer.MAX_VALUE));
-                            ports.add(p);
-                        }
-                        waitingFor = currentSwitchId;
-                        mySara.setPorts(currentSwitchId, ports);
-                        startTimer(currentSwitchId);
-                    }else if (mySara.needComplete(currentSwitchId)){
-                        boolean flag = true;
-                        for (OFPortDesc p : sw.getPorts()) {
-                            if (!mySara.learned(currentSwitchId, p) && flag) {
-                                actions.add(sw.getOFFactory().actions().output(p.getPortNo(), Integer.MAX_VALUE));
-                                flag = false;
+
+                    log.info("broadcasting. {}", sw.getId().getLong());
+                    for (OFPortDesc p : sw.getPorts()) {
+                        startBroadcastTime = System.currentTimeMillis();
+                        timer.schedule(new TimerTask() {
+                            @Override
+                            public void run() {
+                                myProtocolState = myProtocolState.nextState();
+                                log.info("Time's UP");
                             }
-                        }
-                    } else if (mySara.isComplete(currentSwitchId)) {
-                        OFPortDesc p = mySara.findDfsPort(sw);
+                        },SaraProtocolUtils.TIME_OUT * 3);
+                        if (p.equals(inPort)) continue;
                         actions.add(sw.getOFFactory().actions().output(p.getPortNo(), Integer.MAX_VALUE));
-                    }else{
-                        throw new RuntimeException("error code");
+                        // todo mark ports
                     }
                     mySara.setCurrentSwitch(currentSwitchId);
-                    mySara.makeEntryFor(currentSwitchId, sw);
+                    mySara.makeEntryFor(currentSwitchId);
                     myProtocolState = SaraProtocolUtils.SaraProtocolState.GET_RESPOND;
                     myProtocolState.stayInGetRespondFor(sw.getPorts().size() - 1);
                     break;
                 case GET_RESPOND:
-                    if ( currentSwitchId != waitingFor) {
-                        mySara.learnLinkForCurrentSwitch(sw.getId().getLong(), inPort, new Date().getTime() - broadcastTime);
-                        myProtocolState = myProtocolState.nextState();
-                    }
-
+//                    log.info("{}", System.currentTimeMillis() - startBroadcastTime);
+                    myProtocolState.increaseStayInGetRespond();
+                    log.info("getting respond. {}", sw.getId().getLong());
+                    mySara.learnLinkForCurrentSwitch(sw.getId().getLong(),inPort,System.currentTimeMillis() - startBroadcastTime);
+                    myProtocolState = myProtocolState.nextState();
             }
         }
 
+        else if(mySara.haveEntryFor(currentSwitchId)){
+            log.info("not broadcasting");
+            mySara.learnLinkForCurrentSwitch(sw.getId().getLong(),inPort,System.currentTimeMillis() - startBroadcastTime);
+            ArrayList<OFPortDesc> ports = new ArrayList<>(sw.getPorts());
+            if(! visited_ports.containsKey(currentSwitchId))
+                visited_ports.put(currentSwitchId,new HashSet<>());
+            for(OFPortDesc port: ports) {
+                if(!visited_ports.get(currentSwitchId).contains(port.getPortNo())){
+                    visited_ports.get(currentSwitchId).add(port.getPortNo());
+                    log.info("{}...{}", visited_ports, currentSwitchId);
+                    actions.add(sw.getOFFactory().actions().output(port.getPortNo(), Integer.MAX_VALUE));
+                    break;
+                }
+            }
+        }
+
+        log.info("actions {}",actions);
         pob.setActions(actions);
-        // log.info("actions {}",actions);
-        // set buffer-id, in-port and packet-data based on packet-in
+        log.info("actions {}",actions);
+//        set buffer-id, in-port and packet-data based on packet-in
         pob.setBufferId(OFBufferId.NO_BUFFER);
         OFMessageUtils.setInPort(pob, inPort);
         pob.setData(pi.getData());
+
+        log.info("learned:  {}", mySara.getLearned().size());
+        log.info("waiting:  {}", mySara.getWaitingRoom());
 
         if (log.isTraceEnabled()) {
             log.trace("Writing flood PacketOut switch={} packet-in={} packet-out={}",
@@ -325,23 +333,6 @@ public class LearningSwitch
         }
         sw.write(pob.build());
     }
-    private Timer timer = new Timer();
-
-    private void startTimer(long switchId) {
-        broadcastTime = new Date().getTime();
-        timer.schedule(new TimerTask() {
-            @Override
-            public void run() {
-                timeout(switchId);
-            }
-        }, SaraProtocolUtils.TIME_OUT);
-    }
-
-    private void timeout(long switchId){
-        myProtocolState = SaraProtocolUtils.SaraProtocolState.BROADCAST;
-        mySara.setHostPorts(switchId);
-    }
-
 
     /**
      * Writes a OFFlowMod to a switch.
@@ -643,6 +634,7 @@ public class LearningSwitch
 
     // IOFMessageListener
     private boolean showSwitches = true;
+    Map<Long,Set<OFPort>> visited_ports = new HashMap<Long,Set<OFPort>>();
 
     @Override
     public Command receive(IOFSwitch sw, OFMessage msg, FloodlightContext cntx) {
