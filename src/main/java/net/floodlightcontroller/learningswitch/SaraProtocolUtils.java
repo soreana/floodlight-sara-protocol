@@ -2,10 +2,14 @@ package net.floodlightcontroller.learningswitch;
 
 import net.floodlightcontroller.core.FloodlightContext;
 import net.floodlightcontroller.core.IFloodlightProviderService;
+import net.floodlightcontroller.core.IOFSwitch;
 import net.floodlightcontroller.packet.Ethernet;
 import net.floodlightcontroller.packet.IPv4;
 import org.projectfloodlight.openflow.types.EthType;
 import org.projectfloodlight.openflow.types.IpProtocol;
+
+import java.sql.Time;
+import java.util.Timer;
 
 public interface SaraProtocolUtils {
 
@@ -31,18 +35,34 @@ public interface SaraProtocolUtils {
         GET_RESPOND;
         private int stayInGetRespond = 0;
 
-        public void stayInGetRespondFor(int n) {
+        private class TimeOutHandler implements Runnable {
+
+            private SaraProtocolState saraProtocolStates;
+            private LearningSwitch learningSwitch;
+            private IOFSwitch sw;
+
+            public TimeOutHandler (SaraProtocolState saraProtocolStates, LearningSwitch learningSwitch, IOFSwitch sw) {
+                this.saraProtocolStates = saraProtocolStates;
+                this.learningSwitch = learningSwitch;
+                this.sw = sw;
+            }
+
+            @Override
+            public void run() {
+                try {
+                    Thread.sleep(TIME_OUT*1000);
+                    saraProtocolStates = SaraProtocolState.BROADCAST;
+                    this.learningSwitch.setHosts(this.sw);
+                } catch (InterruptedException e) {
+                    e.printStackTrace();
+                }
+            }
+        }
+
+        public void stayInGetRespondFor(int n, LearningSwitch learningSwitch) {
             if (n <= 0)
                 throw new RuntimeException("parameter n should be positive");
             stayInGetRespond = n;
-        }
-
-        public void decreaseStayInGetRespond(){
-            stayInGetRespond --;
-        }
-
-        public void increaseStayInGetRespond(){
-            stayInGetRespond ++;
         }
 
         public SaraProtocolState nextState() {
